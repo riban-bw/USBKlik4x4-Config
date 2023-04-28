@@ -37,45 +37,154 @@ credits = [
     'https://www.freepik.com' # USB
 ]
 
+MAX_PORT = 9
+MAX_CHAIN = 8
+MAX_SLOT = 8
+ICON_SIZE = 32
+WIDTH = 900
 PORT_TYPE = ["USB", "jack", "virtual", "ithru"]
 PORT_TYPE_USB = 0
 PORT_TYPE_JACK = 1
 PORT_TYPE_VIRT = 2
 PORT_TYPE_ITHRU = 3
-PIPE_TYPE = ["filter", "note", "channel", "velocity", "cc", "clock", "loopback", "keyboard split", "velocity split"]
-PIPE_COLOUR = ["red", "orange", "yellow", "green", "blue", "indigo", "violet", "brown", "black"]
-PIPE_MSGFLTR = 0x00
-PIPE_NOTECHG = 0x01
-PIPE_CHANMAP = 0x02
-PIPE_VELOCHG = 0x03
-PIPE_CCCHANG = 0x04
-PIPE_CLKDIVD = 0x05
-PIPE_LOOPBCK = 0x06
-PIPE_SLOTCHN = 0x07
-PIPE_KBSPLIT = 0x08
-PIPE_VLSPLIT = 0x09
+PROC_TYPE = ["filter", "transpose", "map", "velocity", "cc", "clock divide", "loopback", "chain channel", "keyboard split", "velocity split"]
+PROC_COLOUR = ["CornflowerBlue", "cornsilk4", "MediumAquamarine", "SkyBlue3", "goldenrod", "LightPink3", "plum3", "OliveDrab4", "yellow4", "MediumPurple3"]
+PROC_FLTR = 0x00
+PROC_NOTECHG = 0x01
+PROC_CHANMAP = 0x02
+PROC_VELOCHG = 0x03
+PROC_CCCHANG = 0x04
+PROC_CLKDIVD = 0x05
+PROC_LOOPBCK = 0x06
+PROC_SLOTCHN = 0x07
+PROC_KBSPLIT = 0x08
+PROC_VLSPLIT = 0x09
+PROCESSORS = {
+    "filter": {
+        "value": PROC_FLTR,
+        "param": {
+            "type": "cmb",
+            "values": {
+                "include": {
+                    "value" : 0,
+                    "param": {
+                        "type": "bitmask",
+                        "values": {
+                            "Voice": {
+                                "value": 1
+                            },
+                            "System": {
+                                "value": 2
+                            },
+                            "Realtime": {
+                                "value": 4
+                            },
+                            "SysEx": {
+                                "value": 8
+                            }
+                        }
+                    }
+                },
+                "exclude": {
+                    "value": 1,
+                    "param": {
+                        "type": "bitmask",
+                        "values": {
+                            "Voice": {
+                                "value": 1
+                            },
+                            "System": {
+                                "value": 2
+                            },
+                            "Realtime": {
+                                "value": 4
+                            },
+                            "SysEx": {
+                                "value": 8
+                            }
+                        }
+                    }
+                },
+                "MIDI Status": {
+                    "value": 2,
+                    "param": {
+                        "type": "cmb",
+                        "values": {
+                            "Include": {
+                                "value": 0
+                            },
+                            "Exclude": {
+                                "value": 1
+                            }
+                        }
+                    }
+                },
+                "MIDI Channel": {
+                    "value": 3,
+                    "param": {
+                        "type": "cmb",
+                        "values": {
+                            "Include": {
+                                "value": 0
+                            },
+                            "Exclude": {
+                                "value": 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+DEFAULT_PARAMS = [
+    [0x01, 0x04, 0x00, 0x00],
+    [0x00, 0x01, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x7F, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x02, 0x00, 0x00, 0x00],
+    [0x03, 0x01, 0x00, 0x00],
+    [0x01, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00],
+    [0x40, 0x00, 0x00, 0x00]
+]
+
+
 usb_idle = 0
 itellithru_routes = {}
-routes = {} # list of dest ports indexed by "input_port_type:input_port:output_port_type"
-port_slots = {}
-pipelines = {} # [id, param 1, param 2, param 3, param 4] mapped by slot:pipe_index
+routes = {} # Dictionary of dest ports indexed by "input_port_type:input_port:output_port_type"
+port_chains = {} # Index of chain connected to a port, mapped by 'port_type:port_index'
+chains = [ {} for i in range(MAX_CHAIN)] # List of chains. Each chains is a dictionary of slots, indexed by slot id. Each slot contains a list of [proc_type, param1, param2, param3, param4]
 midi_clock = [{"enabled": False, "bpm": 120, "mtc": False} for i in range(4)]
 update_pending = False
-selected_source = ""
-selected_destination = ""
+selected_source = None # [type,index]
+selected_destination = None # [type,index]
 tmp_line = None # ID of a line being dragged out
 ui_thread_running = True
-selected_pipe = None
+selected_processor = None # Index of currently selected processor
+selected_chain = None # Index of currently selected chain
+selected_source = None
+selected_destination = None
+selected_proc_type = None
 
 def send_sysex(payload):
     midi_out.send(mido.Message('sysex', data=sysex_header+payload))
 
+def refresh_chain(chain): 
+    if chain < 1 or chain > MAX_CHAIN:
+        return
+    chains[chain - 1] = {}
+    for slot in range(MAX_SLOT):
+        send_sysex([0x05, 0x11, 0x01, chain, slot])
+
 def request_state(fast=False):
-    global routes, port_slots, pipelines, itellithru_routes
+    global routes, port_chains, chains, itellithru_routes
     itellithru_routes = {}
-    routes = {} # list of dest ports indexed by "input_port_type:input_port:output_port_type"
-    port_slots = {}
-    pipelines = {} # [id, param 1, param 2, param 3, param 4] mapped by slot:pipe_index
+    routes = {}
+    port_chains = {}
+    chains = [{} for i in range(MAX_CHAIN)]
     if fast:
         send_sysex([0x05, 0x7F, 0x00, 0x00, 0x00])
         return
@@ -87,22 +196,22 @@ def request_state(fast=False):
     # USB idle
     send_sysex([0x05, 0x0E, 0x02, 0x00, 0x00])
     # IThru routing
-    for port in range(8):
+    for port in range(MAX_PORT):
         send_sysex([0x05, 0x0E, 0x03, port, 0x00])
     # In port midi routing
     for type in range(3):
-        for port in range(16):
+        for port in range(MAX_PORT):
             send_sysex([0x05, 0x0F, 0x01, type, port])
     # Bus mode settings
     send_sysex([0x05, 0x10, 0x00, 0x00, 0x00])
-    # In port attached slot
+    # Input port attached chain
     for type in range(4):
-        for port in range(16):
+        for port in range(MAX_PORT):
             send_sysex([0x05, 0x11, 0x00, type, port])
-    # Pipes in slot
-    for slot in range(8):
-        for idx in range(8):
-            send_sysex([0x05, 0x11, 0x01, slot + 1, idx])
+    # Processors in chains
+    for chain in range(1, MAX_CHAIN + 1):
+        for slot in range(MAX_SLOT):
+            send_sysex([0x05, 0x11, 0x01, chain, slot])
 
 def hardware_reset():
     send_sysex([0x0A, 0xF7])
@@ -208,46 +317,60 @@ def set_device_id(id):
         return
     send_sysex([0x10, 0x01] + [id])
 
-def copy_slot(src, dst):
-    if src < 1 or src > 8 or dst < 1 or dst > 8:
+def copy_chain(src, dst):
+    if src < 1 or src > 8 or dst < 1 or dst > MAX_CHAIN:
         return
     send_sysex([0x11, 0x00, 0x00, src, dst])
 
-def clear_slot(slot):
-    if slot != 0x7F and (slot < 1 or slot > 8):
+def clear_chain(chain):
+    if chain != 0x7F and (chain < 1 or chain > MAX_CHAIN):
         return
-    send_sysex([0x11, 0x00, 0x01, slot])
+    send_sysex([0x11, 0x00, 0x01, chain])
+    refresh_chain(chain)
 
 '''
 port_type : 0: cable, 1: jack, 2: virtual, 3: ithru
 port : Port index 1..8
-slot : Slot 1..8 or 0 to detach port from all slots
+chain : Chain 1..8 or 0 to detach port from all chains
 '''
-def attach_port_to_slot(port_type, port, slot):
-    if port_type < 0 or port_type > 3 or port < 0 or port > 16 or slot < 0 or slot > 8:
+def attach_port_to_slot(port_type, port, chain):
+    if port_type < 0 or port_type >= 3 or port < 0 or port >= MAX_PORT or chain < 0 or chain > MAX_CHAIN:
         return
-    send_sysex([0x11, 0x00, 0x02, port_type, port, slot])
+    send_sysex([0x11, 0x00, 0x02, port_type, port, chain])
+    send_sysex([0x05, 0x11, 0x00, port_type, port])
 
-def add_pipe(slot, pipe, param_1, param_2, param_3, param_4):
-    send_sysex([0x11, 0x00, slot, pipe, param_1, param_2, param_3, param_4])
+def get_default_params(proc_type, param_1, param_2, param_3, param_4):
+    if param_1 is None:
+        return DEFAULT_PARAMS[proc_type]
+    return [param_1, param_2, param_3, param_4]
 
-def insert_pipe(slot, offset, pipe, param_1, param_2, param_3, param_4):
-    send_sysex([0x11, 0x01, 0x01, slot, offset, pipe, param_1, param_2, param_3, param_4])
+def add_processor(chain, proc_type, param_1=None, param_2=None, param_3=None, param_4=None):
+    params = get_default_params(proc_type, param_1, param_2, param_3, param_4)
+    send_sysex([0x11, 0x01, 0x00, chain, proc_type] + params)
+    refresh_chain(chain)
 
-def replace_pipe(slot, offset, pipe, param_1, param_2, param_3, param_4):
-    send_sysex([0x11, 0x01, 0x02, slot, offset, pipe, param_1, param_2, param_3, param_4])
 
-def clear_pipe(slot, offset):
-    send_sysex([0x11, 0x01, 0x03, slot, offset])
+def insert_processor(chain, offset, proc_type, param_1=None, param_2=None, param_3=None, param_4=None):
+    params = get_default_params(proc_type, param_1, param_2, param_3, param_4)
+    send_sysex([0x11, 0x01, 0x01, chain, offset, proc_type] + params)
+    refresh_chain(chain)
 
-def clear_first_pipe(slot):
-    send_sysex([0x11, 0x01, 0x04, slot])
+def replace_processor(chain, offset, proc_type, param_1, param_2, param_3, param_4):
+    params = get_default_params(proc_type, param_1, param_2, param_3, param_4)
+    send_sysex([0x11, 0x01, 0x02, chain, offset, proc_type] + params)
 
-def bypass_pipe(slot, pipe, bypass=True):
+def remove_processor(chain, offset):
+    send_sysex([0x11, 0x01, 0x03, chain, offset])
+    refresh_chain(chain)
+
+def clear_first_chain(chain):
+    send_sysex([0x11, 0x01, 0x04, chain])
+
+def bypass_chain(chain, slot, bypass=True):
     if bypass:
-        send_sysex([0x11, 0x01, 0x05, slot, pipe, 1])
+        send_sysex([0x11, 0x01, 0x05, chain, slot, 1])
     else:
-        send_sysex([0x11, 0x01, 0x05, slot, pipe, 0])
+        send_sysex([0x11, 0x01, 0x05, chain, slot, 0])
 
 def send_dump():
     #TODO: Implement send_dump
@@ -291,8 +414,84 @@ def device_changed(event=None):
 
     request_state()
 
-def pipe_type_changed(event):
-    logging.warning("TODO: Pipe type change")
+def get_control(root, proc):
+    ret_val = []
+    if "type" not in root:
+        return None
+    if root["type"] == "check":
+        for name, content in root["values"].items():
+            ctrl = ttk.Checkbutton(frame_top, text=name, onvalue=int(content["value"]), command=proc[3])
+            ret_val.append(ctrl)
+        pass
+    elif root["type"] == "bitmask":
+        value = 0
+        try:
+            value = int(proc[0].get())
+        except:
+            pass
+        for i, name in enumerate(root["values"]):
+            val = int(root["values"][name]["value"])
+            a = tk.IntVar()
+            ctrl = ttk.Checkbutton(frame_top, variable=a, text=name, onvalue=val, command=proc[3])
+            if (value & val) == val:
+                a.set(val)
+            ret_val.append(ctrl)
+    elif root["type"] == "cmb":
+        ctrl = ttk.Combobox(frame_top, textvariable=proc[0], state='readonly')
+        ctrl.bind('<<ComboboxSelected>>', proc[3])
+        values = []
+        for val in root['values']:
+            values.append(val)
+        ctrl['values'] = values
+        ret_val.append(ctrl)
+    return ret_val
+
+def update_proc_editor():
+    global proc_params
+    for proc in proc_params:
+        for ctrl in proc[1]:
+            ctrl.grid_forget()
+            del ctrl
+        proc[1] = []
+    try:
+        tree_root = PROCESSORS[proc_type.get()]
+        for proc in proc_params:
+            ctrls = get_control(tree_root["param"], proc)
+            for i, ctrl in enumerate(ctrls):
+                ctrl.grid(row=1+i, column = proc[2], sticky="nw")
+            proc[1] = ctrls
+            tree_root = tree_root["param"]["values"][proc[0].get()]
+    except Exception as e:
+        logging.warning(e)
+    pass
+
+def proc_type_changed(event):
+    update_proc_editor()
+
+def proc_param_1_changed(event=None):
+    logging.warning("TODO: Processor parameter 1")
+    update_proc_editor()
+
+def proc_param_2_changed(event=None):
+    param = proc_params[1]
+    ctrls = param[1]
+    if type(ctrls[0]) == ttk.Checkbutton:
+        value = 0
+        for ctrl in ctrls:
+            if 'selected' in ctrl.state():
+                value += ctrl['onvalue']
+        param[0].set(value)
+
+    logging.warning("TODO: Processor parameter 2")
+    update_proc_editor()
+
+def proc_param_3_changed(event=None):
+    logging.warning("TODO: Processor parameter 3")
+    update_proc_editor()
+
+def proc_param_4_changed(event=None):
+    logging.warning("TODO: Processor parameter 4")
+    update_proc_editor()
 
 def restore_last_download():
     draw_routes()
@@ -379,19 +578,14 @@ def handle_midi_input(data):
         pass
     elif data[3:6] == (0x11, 0x00, 0x02):
         # Slot connections
-        global port_slots
-        port_slots[f"{data[6]}:{data[7]}"] = data[8]
+        global port_chains
+        port_chains[f"{data[6]}:{data[7]}"] = data[8]
     elif data[3:6] == (0x11, 0x01, 0x01):
-        # Transformation pipelines
-        slot = data[6]
-        pipe_index = data[7]
-        pipe_id = data[8]
-        param_1 = data[9]
-        param_2 = data[10]
-        param_3 = data[11]
-        param_4 = data[12]
-        global pilelines
-        pipelines[f"{slot}:{pipe_index}"] = data[8:13]
+        # Transformation chains
+        chain = data[6]
+        slot = data[7]
+        if chain > 0 and chain <= MAX_CHAIN:
+            chains[chain - 1][slot] = data[8:]
     #Ack send_sysex([0x06, 0x03, 1])
     else:
         return False
@@ -422,6 +616,11 @@ def ui_thread_worker():
         if not update_pending:
             draw_routes()
 
+def resize_canvas(event):
+    global WIDTH
+    WIDTH = event.width
+    draw_routes()
+
 ##################################### 
 ## Core sequential functional code ##
 ##################################### 
@@ -436,7 +635,8 @@ klik_devices = [] # List of available USBKlik 4x devices
 # Root window
 root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
-root.grid_rowconfigure(3, weight=1)
+canvas_row = 30
+root.grid_rowconfigure(canvas_row, weight=1)
 root.title('riban USBKliK4x editor')
 
 # Icons
@@ -456,46 +656,70 @@ frame_top = tk.Frame(root, padx=2, pady=2)
 frame_top.columnconfigure(7, weight=1)
 frame_top.grid(row=1, columnspan=2, sticky='enw')
 
+column = 0
+
+# USB MIDI Device
 midi_device_port = tk.StringVar()
-ttk.Label(frame_top, text='USBKlik Device').grid(row=0, column=0, sticky='w')
+ttk.Label(frame_top, text='USBKlik Device').grid(row=0, column=column, sticky='w')
 cmb_device = ttk.Combobox(frame_top, textvariable=midi_device_port, state='readonly')
 cmb_device.bind('<<ComboboxSelected>>', device_changed)
 cmb_device.grid(row=1, column=0, sticky='n')
 cmb_device.bind('<Enter>', populate_devices)
+column += 1
 
-ttk.Label(frame_top, text='VID:PID').grid(row=0, column=1, sticky='n')
+# Processor editor
+ttk.Label(frame_top, text="Processor Type").grid(row=0, column=column, sticky='n')
+proc_type = tk.StringVar()
+cmb_proc_type = ttk.Combobox(frame_top, textvariable=proc_type, state='readonly')
+cmb_proc_type.bind('<<ComboboxSelected>>', proc_type_changed)
+cmb_proc_type.grid(row=1, column=column, sticky='n')
+cmb_proc_type['values'] = PROC_TYPE
+column += 1
+proc_params = []
+fn = [proc_param_1_changed, proc_param_2_changed, proc_param_3_changed, proc_param_4_changed]
+for i in range(4):
+    proc_params.append([tk.StringVar(), [], column, fn[i]])
+    root.columnconfigure(column, weight=1)
+    column += 1
+
+# VID:PID
+ttk.Label(frame_top, text='VID:PID').grid(row=0, column=column, sticky='n')
 vid_pid = tk.StringVar()
-txt_vid_pid =ttk.Label(frame_top, textvar=vid_pid).grid(row=1, column=1, sticky='w')
+txt_vid_pid =ttk.Label(frame_top, textvar=vid_pid).grid(row=1, column=column, sticky='w')
 product_string = tk.StringVar()
+column += 1
 
+# Buttons
 btn_download = ttk.Button(frame_top, image=img_transfer_down, command=request_state)
-btn_download.grid(row=0, column=2, rowspan=2)
+btn_download.grid(row=0, column=column, rowspan=2)
+column += 1
 btn_upload = ttk.Button(frame_top, image=img_transfer_up, command=send_dump)
-btn_upload.grid(row=0, column=3, rowspan=2)
+btn_upload.grid(row=0, column=column, rowspan=2)
+column += 1
 btn_save = ttk.Button(frame_top, image=img_save, command=save)
-btn_save.grid(row=0, column=4, rowspan=2)
+btn_save.grid(row=0, column=column, rowspan=2)
+column += 1
 btn_restore = ttk.Button(frame_top, image=img_restore, command=restore_last_download)
-btn_restore.grid(row=0, column=5, rowspan=2)
+btn_restore.grid(row=0, column=column, rowspan=2)
+column += 1
 btn_info = ttk.Button(frame_top, image=img_info, command=show_info)
-btn_info.grid(row=0, column=6, rowspan=2)
+btn_info.grid(row=0, column=column, rowspan=2)
+column += 1
 device_info = tk.StringVar()
 lbl_device_info = tk.Label(frame_top, textvariable=device_info)
-lbl_device_info.grid(row=0, column=7, sticky='ne')
+lbl_device_info.grid(row=0, column=column, sticky='ne')
+column += 1
 
-pipe_type = tk.StringVar()
-cmb_pipe_type = ttk.Combobox(frame_top, textvariable=pipe_type, state='readonly')
-cmb_pipe_type.bind('<<ComboboxSelected>>', pipe_type_changed)
-cmb_pipe_type.grid(row=2, column=0, sticky='n')
-cmb_pipe_type['values'] = PIPE_TYPE
-
-canvas = tk.Canvas(root, width=800, height=600)
-canvas.grid(row=3, column=0, sticky='nsew')
+# Routing canvas
+canvas = tk.Canvas(root, width=900, height=800)
+canvas.bind('<Configure>', resize_canvas)
+canvas.grid(row=canvas_row, column=0, sticky='nsew')
 src_usb = []
 dst_widgets = [] # List of [type,index,icon]
 src_widgets = [] # List of [type,index,icon]
 
 lbl_statusbar = ttk.Label(root, anchor='w', width=1, background='#cccccc') # width=<any> stops long messages stretching width of display
-lbl_statusbar.grid(row=4, column=0, columnspan=2, sticky='ew')
+lbl_statusbar.grid(row=canvas_row+1, column=0, columnspan=2, sticky='ew')
 
 def connect(src, dst):
     '''Connect two MIDI ports
@@ -538,25 +762,35 @@ def select_click(x, y):
     '''
 
     global selected_source, selected_destination
+    global selected_chain, selected_processor, selected_proc_type
     selected_source = None
     selected_destination = None
+    selected_processor = None
+    selected_chain = None
+    selected_processor = None
+    selected_proc_type = None
+    
     try:
         widget = canvas.find_closest(x, y)[0]
+        tags = canvas.gettags(widget)
+        parts = tags[0].split(":")
+        if "src" in tags:
+            selected_source = [int(parts[0]), int(parts[1])]
+        elif "dst" in tags:
+            selected_destination = [int(parts[0]), int(parts[1])]
+        elif "proc" in tags:
+            selected_chain = int(parts[0])
+            selected_processor = int(parts[1])
+            selected_proc_type = int(parts[2])
+        elif "chain" in tags:
+            selected_chain = int(tags[0])
+        else:
+            return None
     except Exception as e:
         logging.warning(e)
         return
 
-    for w in src_widgets:
-        if widget == w[2]:
-            selected_source = [w[0], w[1]]
-            break
-    if selected_source is None:
-        for w in dst_widgets:
-            if widget == w[2]:
-                selected_destination = [w[0], w[1]]
-                break
-    if selected_source or selected_destination:
-        return widget
+    return widget
 
 def on_src_click(event):
     '''Handle left mouse click on MIDI input'''
@@ -615,12 +849,20 @@ def on_src_context(event):
         dests = usb_dests + jack_dests
     else:
         dests = jack_dests + usb_dests
-    if len(dests):
-        m = tk.Menu(root)
-        for a in dests:
-            for b in a[1]:
-                m.add_command(label = f"Disconnect from {PORT_TYPE[a[0]]} {b + 1}", command=lambda x=[a[0], b]: disconnect(selected_source, x))
-        m.tk_popup(event.x_root, event.y_root)
+    m = tk.Menu(root)
+    for a in dests:
+        for b in a[1]:
+            m.add_command(label=f"Disconnect from {PORT_TYPE[a[0]]} {b + 1}", command=lambda x=[a[0], b]: disconnect(selected_source, x))
+    m.add_separator()
+    current_chain = port_chains[f"{selected_source[0]}:{selected_source[1]}"]
+    if current_chain:
+        m.add_command(label=f"Detach from chain {current_chain}", command=lambda x=selected_source[0], y=selected_source[1]: attach_port_to_slot(selected_source[0], selected_source[1], 0))
+        m.add_separator()
+    for chain in range(1, MAX_CHAIN + 1):
+        if chain != current_chain:
+            m.add_command(label=f"Attach to chain {chain}", command=lambda x=selected_source[0], y=selected_source[1], chain=chain: attach_port_to_slot(selected_source[0], selected_source[1], chain))
+
+    m.tk_popup(event.x_root, event.y_root)
 
 def on_dst_context(event):
     '''Handle right mouse click on MIDI output'''
@@ -639,16 +881,62 @@ def on_dst_context(event):
     if connected:
         m.tk_popup(event.x_root, event.y_root)
 
-def on_pipe_click(event):
-    logging.warning("TODO: Pipe click")
+def on_proc_click(event):
+    global selected_chain, selected_processor, selected_proc_type
+    logging.warning("TODO: Processor click")
     try:
-        widget = canvas.find_closest(event.x, event.y)[0]
-        slot, pipe, type = canvas.gettags(widget)[0].split(":")
-        pipe_type.set(PIPE_TYPE[int(type)])
+        widget = select_click(event.x, event.y)
+        tag = canvas.gettags(widget)[0]
+        proc_type.set(PROC_TYPE[int(selected_proc_type)])
+        canvas.itemconfig("proc_border", width=0)
+        canvas.itemconfig(f"{tag}_border", width=4)
+
     except Exception as e:
         logging.warning(e)
         return    
     pass
+
+def on_proc_release(event):
+    pass
+
+def on_proc_drag(event):
+    pass
+
+def on_proc_context(event):
+    '''Handle right mouse click on pipe'''
+
+    widget = select_click(event.x, event.y)
+    if widget is None:
+        return
+    m = tk.Menu(root)
+    m.add_command(label=f"Remove {PROC_TYPE[selected_proc_type]} processor", command=lambda x=selected_chain, y=selected_processor: remove_processor(x, y))
+    m.add_separator()
+    for proc_type, name in enumerate(PROC_TYPE):
+        m.add_command(label=f"Insert {name}", command=lambda x=selected_chain, y=selected_processor, z=proc_type: insert_processor(x, y, z))
+    m.tk_popup(event.x_root, event.y_root)
+
+def on_chain_click(event):
+    logging.warning("TODO: slot click")
+
+def on_chain_release(event):
+    pass
+
+def on_chain_drag(event):
+    pass
+
+def on_chain_context(event):
+    '''Handle right mouse click on slot'''
+
+    widget = select_click(event.x, event.y)
+    if widget is None:
+        return
+    m = tk.Menu(root)
+    m.add_command(label = f"Clear chain {selected_chain}", command=lambda x=selected_chain: clear_chain(x))
+    #m.add_command(label=f"Disconnect chain {selected_chain} from {PORT_TYPE[selected_source[0]]} {selected_source[1]}", command=lambda x=selected_source[0], y=selected_source[1], z=selected_chain: attach_port_to_slot(selected_source[0], selected_source[1], selected_chain))
+    m.add_separator()
+    for proc_type, name in enumerate(PROC_TYPE):
+        m.add_command(label=f"Add {name}", command=lambda x=selected_chain, y=proc_type: add_processor(x, y))
+    m.tk_popup(event.x_root, event.y_root)
 
 def draw_routes():
     '''Draw the routing graph'''
@@ -658,33 +946,82 @@ def draw_routes():
         canvas.delete(tk.ALL)
         src_widgets = []
         dst_widgets = []
+        v_space = ICON_SIZE + 8
+        if WIDTH < 800:
+            width = 800
+        else:
+            width = WIDTH
+        proc_width = (width - 140) // 8
 
-        for port in range(9): #TODO: Define quanity of ports
+        for port in range(MAX_PORT):
             for type in range(2):
                 if type == PORT_TYPE_USB:
-                    offset = 9 * 40
+                    offset = MAX_PORT * v_space
                 else:
                     offset = 0
                 # Sources
-                canvas.create_text(0, 16 + offset + port * 40, text=f"{port+1}", anchor="w")
-                src_widgets.append([type, port, canvas.create_image(20, offset + port * 40, image=port_images[type], anchor="nw", tags=("src"))])
-                canvas.tag_bind("src", '<ButtonPress-1>', on_src_click)
-                canvas.tag_bind("src", '<ButtonRelease-1>', on_src_release)
-                canvas.tag_bind("src", '<Motion>', on_src_drag)
-                canvas.tag_bind("src", '<Button-3>', on_src_context)
+                canvas.create_text(
+                    0,
+                   ICON_SIZE//2 + offset + port * v_space,
+                   text=f"{port+1}",
+                   anchor="w")
+                tag = f"{type}:{port}"
+                src_widgets.append(
+                    [
+                        type,
+                        port,
+                        canvas.create_image(
+                            20,
+                            offset + port * v_space,
+                            image=port_images[type],
+                            anchor="nw",
+                            tags=(tag, "src")
+                        )
+                    ]
+                )
 
-                # Slots
+                # Chains
                 try:
-                    slot = port_slots[f"{type}:{port}"]
-                    if slot:
-                        canvas.create_rectangle(60, offset + port * 40, 80, offset + port * 40 + 32, width=2, fill="white", tags=("pipe"))
-                        canvas.create_text(70, offset + port * 40 + 16, text=f"{slot}")
-                        for pipe in range(8):
-                            processor = pipelines[f"{slot}:{pipe}"]
-                            proc_type = processor[0]
-                            colour = PIPE_COLOUR[proc_type]
-                            r = canvas.create_rectangle(80 + pipe * 32, offset + port * 40, 110 + pipe * 32, offset + port * 40 + 32, width=2, fill=colour, tags=f"{slot}:{pipe}:{proc_type}")
-                            canvas.tag_bind(r, '<Button-1>', on_pipe_click)
+                    chain = port_chains[f"{type}:{port}"]
+                    if chain:
+                        canvas.create_rectangle(
+                            60,
+                            offset + port * v_space,
+                            80,
+                            offset + port * v_space + ICON_SIZE,
+                            width=2,
+                            fill="white",
+                            tags=(chain, "chain")
+                        )
+                        canvas.create_text(
+                            70,
+                            offset + port * v_space + ICON_SIZE//2,
+                            text=f"{chain}",
+                            tags=(chain, "chain")
+                        )
+                        for slot in range(MAX_SLOT):
+                            try:
+                                processor = chains[chain - 1][slot]
+                                proc_type = processor[0]
+                                colour = PROC_COLOUR[proc_type]
+                                tag=f"{chain}:{slot}:{proc_type}"
+                                canvas.create_rectangle(
+                                    80 + slot * proc_width, 
+                                    offset + port * v_space - 2, 
+                                    80 + (slot + 1) * proc_width, 
+                                    offset + port * v_space + ICON_SIZE + 2, 
+                                    width=0, fill=colour, outline="red", 
+                                    tags=(tag, "proc", f"{tag}_border", "proc_border")
+                                    )
+                                canvas.create_text(
+                                    80 + proc_width // 2 + proc_width * slot,
+                                    offset + port * v_space + ICON_SIZE // 2,
+                                    text=PROC_TYPE[proc_type].replace(" ", "\n"),
+                                    fill="white",
+                                    justify=tk.CENTER,
+                                    tags=(tag, "proc"))
+                            except:
+                                pass # No processor in this slot
                 except:
                     pass
 
@@ -692,26 +1029,88 @@ def draw_routes():
                 if type == PORT_TYPE_USB:
                     offset = 0
                 else:
-                    offset = 9 * 40
-                canvas.create_text(800, 16 + offset + port * 40, text=f"{port+1}", anchor="e")
-                dst_widgets.append([type, port, canvas.create_image(780, offset + port * 40, image=port_images[type], anchor="ne", tags=("dst"))])
-                canvas.tag_bind("dst", '<Button-3>', on_dst_context)
+                    offset = MAX_PORT * v_space
+                tag = f"{type}:{port}"
+                canvas.create_text(
+                    width,
+                    ICON_SIZE//2 + offset + port * v_space,
+                    text=f"{port+1}",
+                    anchor="e"
+                )
+                dst_widgets.append(
+                    [
+                        type,
+                        port,
+                        canvas.create_image(
+                            width - 20,
+                            offset + port * v_space,
+                            image=port_images[type],
+                            anchor="ne",
+                            tags=(tag, "dst")
+                        )
+                    ]
+                )
 
             # Route lines between source DIN and destination Cable
             for dst in routes[f"{PORT_TYPE_JACK}:{port}:{PORT_TYPE_USB}"]:
-                canvas.create_line(52, 16 + port * 40, 748, 16 + dst * 40, fill="blue", width=3, tags=("wire"))
+                canvas.create_line(
+                    52,
+                    ICON_SIZE // 2 + port * v_space,
+                    width - 52,
+                    ICON_SIZE // 2 + dst * v_space,
+                    fill="blue",
+                    width=3,
+                    tags=("wire")
+                )
             # Route lines between source DIN and destination DIN
             for dst in routes[f"{PORT_TYPE_JACK}:{port}:{PORT_TYPE_JACK}"]:
-                canvas.create_line(52, 16 + port * 40, 748, 9*40 + 16 + dst * 40, fill="blue", width=3, tags=("wire"))
+                canvas.create_line(
+                    52,
+                    ICON_SIZE // 2 + port * v_space,
+                    width - 52,
+                    MAX_PORT * v_space + ICON_SIZE // 2 + dst * v_space,
+                    fill="blue",
+                    width=3,
+                    tags=("wire")
+                )
             # Route lines between source USB and destination DIN
             for dst in routes[f"{PORT_TYPE_USB}:{port}:{PORT_TYPE_JACK}"]:
-                canvas.create_line(52, 9*40 + 16 + port * 40, 748, 9*40 + 16 + dst * 40, fill="blue", width=3, tags=("wire"))
+                canvas.create_line(
+                    52,
+                    MAX_PORT * v_space + ICON_SIZE // 2 + port * v_space,
+                    width - 52,
+                    MAX_PORT * v_space + ICON_SIZE // 2 + dst * v_space,
+                    fill="blue",
+                    width=3,
+                    tags=("wire")
+                )
             # Route lines between source USB and destination USB
             for dst in routes[f"{PORT_TYPE_USB}:{port}:{PORT_TYPE_USB}"]:
-                canvas.create_line(52, 9*40 + 16 + port * 40, 748, 16 + dst * 40, fill="blue", width=3, tags=("wire"))
+                canvas.create_line(
+                    52,
+                    MAX_PORT * v_space + ICON_SIZE // 2 + port * v_space,
+                    width - 52,
+                    ICON_SIZE // 2 + dst * v_space,
+                    fill="blue",
+                    width=3,
+                    tags=("wire")
+                )
             canvas.tag_lower("wire")
     except:
         pass
+    canvas.tag_bind("src", '<ButtonPress-1>', on_src_click)
+    canvas.tag_bind("src", '<ButtonRelease-1>', on_src_release)
+    canvas.tag_bind("src", '<Motion>', on_src_drag)
+    canvas.tag_bind("src", '<Button-3>', on_src_context)
+    canvas.tag_bind("dst", '<Button-3>', on_dst_context)
+    canvas.tag_bind("chain", '<Button-1>', on_chain_click)
+    canvas.tag_bind("chain", '<ButtonRelease-1>', on_chain_release)
+    canvas.tag_bind("chain", '<Motion>', on_chain_drag)
+    canvas.tag_bind("chain", '<Button-3>', on_chain_context)
+    canvas.tag_bind("proc", '<Button-1>', on_proc_click)
+    canvas.tag_bind("proc", '<ButtonRelease-1>', on_proc_release)
+    canvas.tag_bind("proc", '<Motion>', on_proc_drag)
+    canvas.tag_bind("proc", '<Button-3>', on_proc_context)
 
 tooltip_obj = ToolTips.ToolTips(
     [btn_download, btn_upload, btn_save, btn_restore, btn_info],
