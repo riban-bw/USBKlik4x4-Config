@@ -17,6 +17,11 @@ import ToolTips
 from datetime import datetime
 from time import sleep
 from threading import Thread
+from os import system
+try:
+    import jack
+except:
+    logging.warning("Jack not available")
 
 sysex_header = [0x77, 0x77, 0x78]
 
@@ -168,9 +173,13 @@ selected_chain = None # Index of currently selected chain
 selected_source = None
 selected_destination = None
 selected_proc_type = None
+try:
+    jack_client = jack.Client("riban_usbklik4x")
+except:
+    jack_client = None
 
 def send_sysex(payload):
-    midi_out.send(mido.Message('sysex', data=sysex_header+payload))
+    midi_port.send(mido.Message('sysex', data=sysex_header+payload))
 
 def refresh_chain(chain): 
     if chain < 1 or chain > MAX_CHAIN:
@@ -389,28 +398,37 @@ def populate_devices(event=None):
 
 # Handle selection from MIDI source drop-down list
 def device_changed(event=None):
-    global midi_thread
     name = midi_device_port.get()
     if name not in klik_devices:
         return
-    #TODO: Open port
-    global midi_in, midi_out
-    #TODO: Reuse MIDI ports
+    device_dst_port = None
+    device_src_port = None
     try:
-        midi_in.close()
-        midi_out.close()
-        global midi_thread_running
-        midi_thread_running = False
-        midi_thread.join()
+        for port in jack_client.get_ports(is_midi=True, is_input=True, is_physical=True):
+            for alias in port.aliases:
+                if alias.endswith('0-MidiKlik-4x-UMK-4X-IN'):
+                    device_dst_port = port
+                    break
+            if device_dst_port:
+                break
+        for port in jack_client.get_ports(is_midi=True, is_output=True, is_physical=True):
+            for alias in port.aliases:
+                if alias.endswith('0-MidiKlik-4x-UMK-4X-OUT'):
+                    device_src_port = port
+                    break
+            if device_src_port:
+                break
+        own_dst = jack_client.get_ports("ribanUSBKlik4x", is_input=True)[0]
+        own_src = jack_client.get_ports("ribanUSBKlik4x", is_output=True)[0]
+
+        jack_client.connect(device_src_port, own_dst)
+        jack_client.connect(own_src, device_dst_port)
     except:
-        pass
-    midi_in = mido.open_input(name)
-    midi_out = mido.open_output(name)
-    # Start MIDI listening thread
-    midi_thread = Thread(target=midi_in_thread, args=())
-    midi_thread.name = 'alsa_in'
-    midi_thread.daemon = True
-    midi_thread.start()
+        try:
+            system(f"aconnect '{midi_port.input.name}' '{name}'")
+            system(f"aconnect '{name}' '{midi_port.output.name}'")
+        except:
+            pass
 
     request_state()
 
@@ -596,7 +614,7 @@ def midi_in_thread():
     global midi_thread_running, update_pending
     midi_thread_running = True
     while midi_thread_running:
-        msg = midi_in.receive(block=False)
+        msg = midi_port.receive(block=False)
         if msg:
             if msg.type == 'sysex':
                 update_pending |= handle_midi_input(msg.data)
@@ -626,8 +644,7 @@ def resize_canvas(event):
 ##################################### 
 
 ## Initialise MIDI interfaces ##
-midi_in = mido.open_input()
-midi_out = mido.open_output()
+midi_port = mido.open_ioport('ribanUSBKlik4x', virtual=True)
 
 # Create UI
 klik_devices = [] # List of available USBKlik 4x devices
@@ -637,7 +654,7 @@ root = tk.Tk()
 root.grid_columnconfigure(0, weight=1)
 canvas_row = 30
 root.grid_rowconfigure(canvas_row, weight=1)
-root.title('riban USBKliK4x editor')
+root.title('riban USBKlik4x editor')
 
 # Icons
 img_transfer_down = ImageTk.PhotoImage(Image.open('transfer.png'))
@@ -802,9 +819,9 @@ def on_src_click(event):
 
     if selected_source:
         if selected_source[0] == PORT_TYPE_JACK:
-            offset = 0
+            offset = 4
         elif selected_source[0] == PORT_TYPE_USB:
-            offset = 9 * 40
+            offset = 4 + 9 * 40
         else:
             return
         tmp_line = canvas.create_line(52, offset + 16 + selected_source[1] * 40, 52, offset + 16 + selected_source[1] * 40, fill="blue", width=3)
@@ -956,9 +973,9 @@ def draw_routes():
         for port in range(MAX_PORT):
             for type in range(2):
                 if type == PORT_TYPE_USB:
-                    offset = MAX_PORT * v_space
+                    offset = 4 + MAX_PORT * v_space
                 else:
-                    offset = 0
+                    offset = 4
                 # Sources
                 canvas.create_text(
                     0,
@@ -989,7 +1006,7 @@ def draw_routes():
                             offset + port * v_space,
                             80,
                             offset + port * v_space + ICON_SIZE,
-                            width=2,
+                            width=0,
                             fill="white",
                             tags=(chain, "chain")
                         )
@@ -1027,9 +1044,9 @@ def draw_routes():
 
                 # Destinations
                 if type == PORT_TYPE_USB:
-                    offset = 0
+                    offset = 4
                 else:
-                    offset = MAX_PORT * v_space
+                    offset = 4 + MAX_PORT * v_space
                 tag = f"{type}:{port}"
                 canvas.create_text(
                     width,
@@ -1125,11 +1142,19 @@ try:
 except:
     pass
 
+# Start UI thread
 ui_thread = Thread(target=ui_thread_worker, args=())
 ui_thread.name = 'ui'
 ui_thread.daemon = True
 ui_thread.start()
 
+# Start MIDI listening thread
+midi_thread = Thread(target=midi_in_thread, args=())
+midi_thread.name = 'midi_in'
+midi_thread.daemon = True
+midi_thread.start()
+
+# Start main UI thread
 root.mainloop()
 
 ui_thread_running = False
