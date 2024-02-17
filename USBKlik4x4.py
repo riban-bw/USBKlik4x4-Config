@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 # Configuration editor for TheKikGen USBKlik4x-Config
 #
 # Copyright: riban ltd (riban.co.uk)
